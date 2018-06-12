@@ -1,21 +1,19 @@
 import { moduleFor, RenderingTest } from '../utils/test-case';
 import { strip } from '../utils/abstract-test-case';
-import { Component } from '../utils/helpers';
 
 import { Object as EmberObject } from 'ember-runtime';
 import { set, setProperties, computed } from 'ember-metal';
 import { GLIMMER_CUSTOM_COMPONENT_MANAGER } from '@ember/canary-features';
-import { componentManager } from 'ember-glimmer';
-import { getChildViews } from 'ember-views';
+import { setComponentManager, capabilities } from 'ember-glimmer';
 import { assign } from '@ember/polyfills';
 
 const MANAGER_ID = 'test-custom';
 
-const CustomComponent = componentManager(EmberObject.extend(), MANAGER_ID);
+const CustomComponent = setComponentManager(MANAGER_ID, EmberObject.extend());
 
 if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
   moduleFor(
-    'Components test: curly components with custom manager',
+    'Component Manager',
     class extends RenderingTest {
       /*
      * Helper to register a custom component manager. Provides a basic, default
@@ -25,8 +23,9 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
       registerCustomComponentManager(overrides = {}) {
         let options = assign(
           {
-            version: '3.1',
-            create({ ComponentClass }) {
+            capabilities: capabilities('3.4'),
+
+            createComponent(ComponentClass) {
               return ComponentClass.create();
             },
 
@@ -34,7 +33,7 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
               return component;
             },
 
-            update() {},
+            updateComponent() {},
           },
           overrides
         );
@@ -101,8 +100,8 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
 
       ['@test it can set arguments on the component instance']() {
         this.registerCustomComponentManager({
-          create({ ComponentClass, args }) {
-            return ComponentClass.create({ args });
+          createComponent(ComponentClass, { named }) {
+            return ComponentClass.create({ args: named });
           },
         });
 
@@ -124,12 +123,12 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
 
       ['@test arguments are updated if they change']() {
         this.registerCustomComponentManager({
-          create({ ComponentClass, args }) {
-            return ComponentClass.create({ args });
+          createComponent(ComponentClass, { named }) {
+            return ComponentClass.create({ args: named });
           },
 
-          update(component, args) {
-            set(component, 'args', args);
+          updateComponent(component, { named }) {
+            set(component, 'args', named);
           },
         });
 
@@ -159,119 +158,6 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
         );
 
         this.assertHTML(strip`<p>Chad Hietala</p>`);
-      }
-
-      [`@test custom components appear in parent view's childViews array`](assert) {
-        this.registerCustomComponentManager();
-
-        let ComponentClass = CustomComponent.extend({
-          isCustomComponent: true,
-        });
-
-        this.registerComponent('turbo-component', {
-          template: `<p>turbo</p>`,
-          ComponentClass,
-        });
-
-        this.registerComponent('curly-component', {
-          template: `<div>curly</div>`,
-          ComponentClass: Component.extend({
-            isClassicComponent: true,
-          }),
-        });
-
-        this.render('{{#if showTurbo}}{{turbo-component}}{{/if}} {{curly-component}}', {
-          showTurbo: true,
-        });
-
-        let { childViews } = this.context;
-
-        assert.equal(childViews.length, 2, 'root component has two child views');
-        assert.ok(childViews[0].isCustomComponent, 'first child view is custom component');
-        assert.ok(childViews[1].isClassicComponent, 'second child view is classic component');
-
-        this.runTask(() => set(this.context, 'showTurbo', false));
-
-        // childViews array is not live and must be re-fetched after changes
-        childViews = this.context.childViews;
-
-        assert.equal(
-          childViews.length,
-          1,
-          "turbo component is removed from parent's child views array"
-        );
-        assert.ok(childViews[0].isClassicComponent, 'first child view is classic component');
-
-        this.runTask(() => set(this.context, 'showTurbo', true));
-
-        childViews = this.context.childViews;
-        assert.equal(childViews.length, 2, 'root component has two child views');
-        assert.ok(childViews[0].isClassicComponent, 'first child view is classic component');
-        assert.ok(childViews[1].isCustomComponent, 'second child view is custom component');
-      }
-
-      ['@test can invoke classic components in custom components'](assert) {
-        this.registerCustomComponentManager();
-
-        let ComponentClass = CustomComponent.extend({
-          isCustomComponent: true,
-        });
-
-        this.registerComponent('turbo-component', {
-          template: `<p>turbo</p>{{curly-component}}`,
-          ComponentClass,
-        });
-
-        let classicComponent;
-
-        this.registerComponent('curly-component', {
-          template: `<div>curly</div>`,
-          ComponentClass: Component.extend({
-            init() {
-              this._super(...arguments);
-              classicComponent = this;
-            },
-
-            isClassicComponent: true,
-          }),
-        });
-
-        this.render('{{turbo-component}}');
-
-        this.assertElement(this.firstChild, {
-          tagName: 'P',
-          content: 'turbo',
-        });
-
-        this.assertComponentElement(this.firstChild.nextSibling, {
-          tagName: 'DIV',
-          content: '<div>curly</div>',
-        });
-
-        let { childViews } = this.context;
-
-        assert.equal(childViews.length, 1, 'root component has one child view');
-        assert.ok(childViews[0].isCustomComponent, 'root child view is custom component');
-
-        let customComponent = childViews[0];
-
-        assert.strictEqual(
-          customComponent.childViews,
-          undefined,
-          'custom component does not have childViews property'
-        );
-
-        childViews = getChildViews(customComponent);
-        assert.equal(childViews.length, 1, 'custom component has one child view');
-        assert.ok(
-          childViews[0].isClassicComponent,
-          'custom component child view is classic component'
-        );
-
-        assert.ok(
-          classicComponent.parentView.isCustomComponent,
-          `classic component's parentView is custom component`
-        );
       }
     }
   );

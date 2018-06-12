@@ -9,15 +9,17 @@ import {
   RuntimeResolver as IRuntimeResolver,
 } from '@glimmer/interfaces';
 import { LazyCompiler, Macros, PartialDefinition } from '@glimmer/opcode-compiler';
-import { ComponentManager, getDynamicVar, Helper, ModifierManager } from '@glimmer/runtime';
+import { getDynamicVar, Helper, ModifierManager } from '@glimmer/runtime';
 import { privatize as P } from 'container';
 import { ENV } from 'ember-environment';
 import { LookupOptions, Owner, setOwner } from 'ember-owner';
 import { lookupComponent, lookupPartial, OwnedTemplateMeta } from 'ember-views';
 import CompileTimeLookup from './compile-time-lookup';
 import { CurlyComponentDefinition } from './component-managers/curly';
-import CustomComponentManager, { CustomComponentState } from './component-managers/custom';
-import DefinitionState from './component-managers/definition-state';
+import CustomComponentManager, {
+  CustomManagerDefinition,
+  ManagerDelegate,
+} from './component-managers/custom';
 import { TemplateOnlyComponentDefinition } from './component-managers/template-only';
 import { isHelperFactory, isSimpleHelper } from './helper';
 import { default as classHelper } from './helpers/-class';
@@ -41,8 +43,7 @@ import { mountHelper } from './syntax/mount';
 import { outletHelper } from './syntax/outlet';
 import { renderHelper } from './syntax/render';
 import { Factory as TemplateFactory, Injections, OwnedTemplate } from './template';
-import ComponentStateBucket from './utils/curly-component-state-bucket';
-import getCustomComponentManager from './utils/custom-component-manager';
+import { getComponentManager } from './utils/custom-component-manager';
 import { ClassBasedHelperReference, SimpleHelperReference } from './utils/references';
 
 function instrumentationPayload(name: string) {
@@ -105,6 +106,7 @@ export default class RuntimeResolver implements IRuntimeResolver<OwnedTemplateMe
   // supports directly imported late bound layouts on component.prototype.layout
   private templateCache: Map<Owner, Map<TemplateFactory, OwnedTemplate>> = new Map();
   private componentDefinitionCache: Map<object, ComponentDefinition | null> = new Map();
+  private customManagerCache: Map<string, CustomComponentManager> = new Map();
 
   public templateCacheHits = 0;
   public templateCacheMisses = 0;
@@ -214,7 +216,7 @@ export default class RuntimeResolver implements IRuntimeResolver<OwnedTemplateMe
   }
 
   // needed for lazy compile time lookup
-  private handle(obj: any | null | undefined) {
+  private handle(obj: Opaque) {
     if (obj === undefined || obj === null) {
       return null;
     }
@@ -320,27 +322,41 @@ export default class RuntimeResolver implements IRuntimeResolver<OwnedTemplateMe
       return cachedComponentDefinition;
     }
 
+    let finalizer = _instrumentStart('render.getComponentDefinition', instrumentationPayload, name);
+
     if (layout && !component && ENV._TEMPLATE_ONLY_GLIMMER_COMPONENTS) {
       let definition = new TemplateOnlyComponentDefinition(layout);
+      finalizer();
       this.componentDefinitionCache.set(key, definition);
       return definition;
     }
 
-    let manager:
-      | ComponentManager<ComponentStateBucket, DefinitionState>
-      | CustomComponentManager<CustomComponentState<any>>
-      | undefined;
-
     if (GLIMMER_CUSTOM_COMPONENT_MANAGER && component && component.class) {
-      manager = getCustomComponentManager(meta.owner, component.class);
+      let managerId = getComponentManager(component.class);
+      if (managerId) {
+        let manager = this._lookupComponentManager(meta.owner, managerId);
+        assert(
+          `Could not find custom component manager '${managerId}' which was specified by ${
+            component.class
+          }`,
+          !!manager
+        );
+
+        let definition = new CustomManagerDefinition(
+          name,
+          component,
+          manager,
+          layout || meta.owner.lookup<OwnedTemplate>(P`template:components/-default`)
+        );
+        this.componentDefinitionCache.set(key, definition);
+        return definition;
+      }
     }
 
-    let finalizer = _instrumentStart('render.getComponentDefinition', instrumentationPayload, name);
     let definition =
       layout || component
         ? new CurlyComponentDefinition(
             name,
-            manager,
             component || meta.owner.factoryFor(P`component:-default`),
             null,
             layout! // TODO fix type
@@ -352,5 +368,17 @@ export default class RuntimeResolver implements IRuntimeResolver<OwnedTemplateMe
     this.componentDefinitionCache.set(key, definition);
 
     return definition;
+  }
+
+  _lookupComponentManager(owner: Owner, managerId: string): CustomComponentManager {
+    if (this.customManagerCache.has(managerId)) {
+      return this.customManagerCache.get(managerId)!;
+    }
+    let delegate = owner.lookup<ManagerDelegate>(`component-manager:${managerId}`);
+    let manager = new CustomComponentManager(delegate);
+
+    this.customManagerCache.set(managerId, manager);
+
+    return manager;
   }
 }
