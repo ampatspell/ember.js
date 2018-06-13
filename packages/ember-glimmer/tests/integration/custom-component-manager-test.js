@@ -1,58 +1,83 @@
 import { moduleFor, RenderingTest } from '../utils/test-case';
-import { strip } from '../utils/abstract-test-case';
-
 import { Object as EmberObject } from 'ember-runtime';
 import { set, setProperties, computed } from 'ember-metal';
 import { GLIMMER_CUSTOM_COMPONENT_MANAGER } from '@ember/canary-features';
 import { setComponentManager, capabilities } from 'ember-glimmer';
-import { assign } from '@ember/polyfills';
-
-const MANAGER_ID = 'test-custom';
-
-const CustomComponent = setComponentManager(MANAGER_ID, EmberObject.extend());
 
 if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
   moduleFor(
     'Component Manager',
     class extends RenderingTest {
-      /*
-     * Helper to register a custom component manager. Provides a basic, default
-     * implementation of the custom component manager API, but can be overridden
-     * by passing custom hooks.
-     */
-      registerCustomComponentManager(overrides = {}) {
-        let options = assign(
-          {
+      constructor(assert) {
+        super(...arguments);
+
+        this.registerComponentManager(
+          'basic',
+          EmberObject.extend({
             capabilities: capabilities('3.4'),
 
-            createComponent(ComponentClass) {
-              return ComponentClass.create();
+            createComponent(factory, args) {
+              return factory.create({ args });
+            },
+
+            updateComponent(component, args) {
+              set(component, 'args', args);
             },
 
             getContext(component) {
               return component;
             },
-
-            updateComponent() {},
-          },
-          overrides
+          })
         );
 
-        this.owner.register(`component-manager:${MANAGER_ID}`, options, {
-          singleton: true,
-          instantiate: false,
-        });
+        this.registerComponentManager(
+          'instrumented-full',
+          EmberObject.extend({
+            capabilities: capabilities('3.4', {
+              destructor: true,
+              asyncLifecycleCallbacks: true,
+            }),
+
+            createComponent(factory, args) {
+              assert.step('createComponent');
+              return factory.create({ args });
+            },
+
+            updateComponent(component, args) {
+              assert.step('updateComponent');
+              set(component, 'args', args);
+            },
+
+            destroyComponent(component) {
+              assert.step('destroyComponent');
+              component.destroy();
+            },
+
+            getContext(component) {
+              assert.step('getContext');
+              return component;
+            },
+
+            didCreateComponent(component) {
+              assert.step('didCreateComponent');
+              component.didRender();
+            },
+
+            didUpdateComponent(component) {
+              assert.step('didUpdateComponent');
+              component.didUpdate();
+            },
+          })
+        );
       }
 
-      // Renders a simple component with a custom component manager and verifies
-      // that properties from the component are accessible from the component's
-      // template.
       ['@test it can render a basic component with custom component manager']() {
-        this.registerCustomComponentManager();
-
-        let ComponentClass = CustomComponent.extend({
-          greeting: 'hello',
-        });
+        let ComponentClass = setComponentManager(
+          'basic',
+          EmberObject.extend({
+            greeting: 'hello',
+          })
+        );
 
         this.registerComponent('foo-bar', {
           template: `<p>{{greeting}} world</p>`,
@@ -61,28 +86,127 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
 
         this.render('{{foo-bar}}');
 
-        this.assertHTML(strip`<p>hello world</p>`);
+        this.assertHTML(`<p>hello world</p>`);
       }
 
-      // Tests the custom component manager's ability to override template context
-      // by implementing the getContext hook. Test performs an initial render and
-      // updating render and verifies that output came from the custom context,
-      // not the component instance.
+      ['@test it can have no template context']() {
+        this.registerComponentManager(
+          'pseudo-template-only',
+          EmberObject.extend({
+            capabilities: capabilities('3.4'),
+
+            createComponent() {
+              return null;
+            },
+
+            updateComponent() {},
+
+            getContext() {
+              return null;
+            },
+          })
+        );
+
+        let ComponentClass = setComponentManager('pseudo-template-only', {});
+
+        this.registerComponent('foo-bar', {
+          template: `<p>{{@greeting}} world</p>`,
+          ComponentClass,
+        });
+
+        this.render('{{foo-bar greeting="hello"}}');
+
+        this.assertHTML(`<p>hello world</p>`);
+      }
+
+      ['@test it can discover component manager through inheritance - ES Classes']() {
+        this.registerComponentManager(
+          'test',
+          EmberObject.extend({
+            capabilities: capabilities('3.4'),
+
+            createComponent(factory, args) {
+              let Klass = factory.class;
+              return new Klass(args);
+            },
+
+            updateComponent() {},
+
+            getContext(component) {
+              return component;
+            },
+          })
+        );
+
+        class Base {}
+        setComponentManager('test', Base);
+        class Child extends Base {}
+        class Grandchild extends Child {
+          constructor() {
+            super();
+            this.name = 'grandchild';
+          }
+        }
+
+        this.registerComponent('foo-bar', {
+          template: `{{this.name}}`,
+          ComponentClass: Grandchild,
+        });
+
+        this.render('{{foo-bar}}');
+
+        this.assertHTML(`grandchild`);
+      }
+
+      ['@test it can discover component manager through inheritance - Ember Object']() {
+        let Parent = setComponentManager('basic', EmberObject.extend());
+        let Child = Parent.extend();
+        let Grandchild = Child.extend({
+          init() {
+            this._super(...arguments);
+            this.name = 'grandchild';
+          },
+        });
+
+        this.registerComponent('foo-bar', {
+          template: `{{this.name}}`,
+          ComponentClass: Grandchild,
+        });
+
+        this.render('{{foo-bar}}');
+
+        this.assertHTML(`grandchild`);
+      }
+
       ['@test it can customize the template context']() {
         let customContext = {
           greeting: 'goodbye',
         };
 
-        this.registerCustomComponentManager({
-          getContext() {
-            return customContext;
-          },
-        });
+        this.registerComponentManager(
+          'test',
+          EmberObject.extend({
+            capabilities: capabilities('3.4'),
 
-        let ComponentClass = CustomComponent.extend({
-          greeting: 'hello',
-          count: 1234,
-        });
+            createComponent(factory) {
+              return factory.create();
+            },
+
+            getContext() {
+              return customContext;
+            },
+
+            updateComponent() {},
+          })
+        );
+
+        let ComponentClass = setComponentManager(
+          'test',
+          EmberObject.extend({
+            greeting: 'hello',
+            count: 1234,
+          })
+        );
 
         this.registerComponent('foo-bar', {
           template: `<p>{{greeting}} world {{count}}</p>`,
@@ -91,25 +215,22 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
 
         this.render('{{foo-bar}}');
 
-        this.assertHTML(strip`<p>goodbye world </p>`);
+        this.assertHTML(`<p>goodbye world </p>`);
 
         this.runTask(() => set(customContext, 'greeting', 'sayonara'));
 
-        this.assertHTML(strip`<p>sayonara world </p>`);
+        this.assertHTML(`<p>sayonara world </p>`);
       }
 
       ['@test it can set arguments on the component instance']() {
-        this.registerCustomComponentManager({
-          createComponent(ComponentClass, { named }) {
-            return ComponentClass.create({ args: named });
-          },
-        });
-
-        let ComponentClass = CustomComponent.extend({
-          salutation: computed('args.firstName', 'args.lastName', function() {
-            return this.get('args.firstName') + ' ' + this.get('args.lastName');
-          }),
-        });
+        let ComponentClass = setComponentManager(
+          'basic',
+          EmberObject.extend({
+            salutation: computed('args.named.firstName', 'args.named.lastName', function() {
+              return this.args.named.firstName + ' ' + this.args.named.lastName;
+            }),
+          })
+        );
 
         this.registerComponent('foo-bar', {
           template: `<p>{{salutation}}</p>`,
@@ -118,25 +239,18 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
 
         this.render('{{foo-bar firstName="Yehuda" lastName="Katz"}}');
 
-        this.assertHTML(strip`<p>Yehuda Katz</p>`);
+        this.assertHTML(`<p>Yehuda Katz</p>`);
       }
 
       ['@test arguments are updated if they change']() {
-        this.registerCustomComponentManager({
-          createComponent(ComponentClass, { named }) {
-            return ComponentClass.create({ args: named });
-          },
-
-          updateComponent(component, { named }) {
-            set(component, 'args', named);
-          },
-        });
-
-        let ComponentClass = CustomComponent.extend({
-          salutation: computed('args.firstName', 'args.lastName', function() {
-            return this.get('args.firstName') + ' ' + this.get('args.lastName');
-          }),
-        });
+        let ComponentClass = setComponentManager(
+          'basic',
+          EmberObject.extend({
+            salutation: computed('args.named.firstName', 'args.named.lastName', function() {
+              return this.args.named.firstName + ' ' + this.args.named.lastName;
+            }),
+          })
+        );
 
         this.registerComponent('foo-bar', {
           template: `<p>{{salutation}}</p>`,
@@ -148,7 +262,7 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
           lastName: 'Katz',
         });
 
-        this.assertHTML(strip`<p>Yehuda Katz</p>`);
+        this.assertHTML(`<p>Yehuda Katz</p>`);
 
         this.runTask(() =>
           setProperties(this.context, {
@@ -157,7 +271,120 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
           })
         );
 
-        this.assertHTML(strip`<p>Chad Hietala</p>`);
+        this.assertHTML(`<p>Chad Hietala</p>`);
+      }
+
+      ['@test it can opt-in to running destructor'](assert) {
+        this.registerComponentManager(
+          'test',
+          EmberObject.extend({
+            capabilities: capabilities('3.4', {
+              destructor: true,
+            }),
+
+            createComponent(factory) {
+              assert.step('createComponent');
+              return factory.create();
+            },
+
+            getContext(component) {
+              return component;
+            },
+
+            updateComponent() {},
+
+            destroyComponent(component) {
+              assert.step('destroyComponent');
+              component.destroy();
+            },
+          })
+        );
+
+        let ComponentClass = setComponentManager(
+          'test',
+          EmberObject.extend({
+            greeting: 'hello',
+            destroy() {
+              assert.step('component.destroy()');
+              this._super(...arguments);
+            },
+          })
+        );
+
+        this.registerComponent('foo-bar', {
+          template: `<p>{{greeting}} world</p>`,
+          ComponentClass,
+        });
+
+        this.render('{{#if show}}{{foo-bar}}{{/if}}', { show: true });
+
+        this.assertHTML(`<p>hello world</p>`);
+
+        this.runTask(() => this.context.set('show', false));
+
+        this.assertText('');
+
+        assert.verifySteps(['createComponent', 'destroyComponent', 'component.destroy()']);
+      }
+
+      ['@test it can opt-in to running async lifecycle hooks'](assert) {
+        this.registerComponentManager(
+          'test',
+          EmberObject.extend({
+            capabilities: capabilities('3.4', {
+              asyncLifecycleCallbacks: true,
+            }),
+
+            createComponent(factory, args) {
+              assert.step('createComponent');
+              return factory.create({ args });
+            },
+
+            updateComponent(component, args) {
+              assert.step('updateComponent');
+              set(component, 'args', args);
+            },
+
+            destroyComponent(component) {
+              assert.step('destroyComponent');
+              component.destroy();
+            },
+
+            getContext(component) {
+              assert.step('getContext');
+              return component;
+            },
+
+            didCreateComponent() {
+              assert.step('didCreateComponent');
+            },
+
+            didUpdateComponent() {
+              assert.step('didUpdateComponent');
+            },
+          })
+        );
+
+        let ComponentClass = setComponentManager(
+          'test',
+          EmberObject.extend({
+            greeting: 'hello',
+          })
+        );
+
+        this.registerComponent('foo-bar', {
+          template: `<p>{{greeting}} {{@name}}</p>`,
+          ComponentClass,
+        });
+
+        this.render('{{foo-bar name=name}}', { name: 'world' });
+
+        this.assertHTML(`<p>hello world</p>`);
+        assert.verifySteps(['createComponent', 'getContext', 'didCreateComponent']);
+
+        this.runTask(() => this.context.set('name', 'max'));
+        this.assertHTML(`<p>hello max</p>`);
+        assert.verifySteps(['updateComponent', 'didUpdateComponent']);
       }
     }
   );
