@@ -1,76 +1,81 @@
 import { moduleFor, RenderingTest } from '../utils/test-case';
 import { Object as EmberObject } from 'ember-runtime';
 import { set, setProperties, computed } from 'ember-metal';
-import { GLIMMER_CUSTOM_COMPONENT_MANAGER } from '@ember/canary-features';
+import {
+  GLIMMER_CUSTOM_COMPONENT_MANAGER,
+  EMBER_GLIMMER_ANGLE_BRACKET_INVOCATION,
+} from '@ember/canary-features';
 import { setComponentManager, capabilities } from 'ember-glimmer';
 
 if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
+  class ComponentManagerTest extends RenderingTest {
+    constructor(assert) {
+      super(...arguments);
+
+      this.registerComponentManager(
+        'basic',
+        EmberObject.extend({
+          capabilities: capabilities('3.4'),
+
+          createComponent(factory, args) {
+            return factory.create({ args });
+          },
+
+          updateComponent(component, args) {
+            set(component, 'args', args);
+          },
+
+          getContext(component) {
+            return component;
+          },
+        })
+      );
+
+      this.registerComponentManager(
+        'instrumented-full',
+        EmberObject.extend({
+          capabilities: capabilities('3.4', {
+            destructor: true,
+            asyncLifecycleCallbacks: true,
+          }),
+
+          createComponent(factory, args) {
+            assert.step('createComponent');
+            return factory.create({ args });
+          },
+
+          updateComponent(component, args) {
+            assert.step('updateComponent');
+            set(component, 'args', args);
+          },
+
+          destroyComponent(component) {
+            assert.step('destroyComponent');
+            component.destroy();
+          },
+
+          getContext(component) {
+            assert.step('getContext');
+            return component;
+          },
+
+          didCreateComponent(component) {
+            assert.step('didCreateComponent');
+            component.didRender();
+          },
+
+          didUpdateComponent(component) {
+            assert.step('didUpdateComponent');
+            component.didUpdate();
+          },
+        })
+      );
+    }
+  }
+
   moduleFor(
-    'Component Manager',
-    class extends RenderingTest {
-      constructor(assert) {
-        super(...arguments);
-
-        this.registerComponentManager(
-          'basic',
-          EmberObject.extend({
-            capabilities: capabilities('3.4'),
-
-            createComponent(factory, args) {
-              return factory.create({ args });
-            },
-
-            updateComponent(component, args) {
-              set(component, 'args', args);
-            },
-
-            getContext(component) {
-              return component;
-            },
-          })
-        );
-
-        this.registerComponentManager(
-          'instrumented-full',
-          EmberObject.extend({
-            capabilities: capabilities('3.4', {
-              destructor: true,
-              asyncLifecycleCallbacks: true,
-            }),
-
-            createComponent(factory, args) {
-              assert.step('createComponent');
-              return factory.create({ args });
-            },
-
-            updateComponent(component, args) {
-              assert.step('updateComponent');
-              set(component, 'args', args);
-            },
-
-            destroyComponent(component) {
-              assert.step('destroyComponent');
-              component.destroy();
-            },
-
-            getContext(component) {
-              assert.step('getContext');
-              return component;
-            },
-
-            didCreateComponent(component) {
-              assert.step('didCreateComponent');
-              component.didRender();
-            },
-
-            didUpdateComponent(component) {
-              assert.step('didUpdateComponent');
-              component.didUpdate();
-            },
-          })
-        );
-      }
-
+    'Component Manager - Curly Invocation',
+    class extends ComponentManagerTest {
       ['@test it can render a basic component with custom component manager']() {
         let ComponentClass = setComponentManager(
           'basic',
@@ -388,4 +393,117 @@ if (GLIMMER_CUSTOM_COMPONENT_MANAGER) {
       }
     }
   );
+
+  if (EMBER_GLIMMER_ANGLE_BRACKET_INVOCATION) {
+    moduleFor(
+      'Component Manager - Angle Invocation',
+      class extends ComponentManagerTest {
+        ['@test it can render a basic component with custom component manager']() {
+          let ComponentClass = setComponentManager(
+            'basic',
+            EmberObject.extend({
+              greeting: 'hello',
+            })
+          );
+
+          this.registerComponent('foo-bar', {
+            template: `<p>{{greeting}} world</p>`,
+            ComponentClass,
+          });
+
+          this.render('<FooBar />');
+
+          this.assertHTML(`<p>hello world</p>`);
+        }
+
+        ['@test it can set arguments on the component instance']() {
+          let ComponentClass = setComponentManager(
+            'basic',
+            EmberObject.extend({
+              salutation: computed('args.named.firstName', 'args.named.lastName', function() {
+                return this.args.named.firstName + ' ' + this.args.named.lastName;
+              }),
+            })
+          );
+
+          this.registerComponent('foo-bar', {
+            template: `<p>{{salutation}}</p>`,
+            ComponentClass,
+          });
+
+          this.render('<FooBar @firstName="Yehuda" @lastName="Katz" />');
+
+          this.assertHTML(`<p>Yehuda Katz</p>`);
+        }
+
+        ['@test it can pass attributes']() {
+          let ComponentClass = setComponentManager('basic', EmberObject.extend());
+
+          this.registerComponent('foo-bar', {
+            template: `<p ...attributes>Hello world!</p>`,
+            ComponentClass,
+          });
+
+          this.render('<FooBar data-test="foo" />');
+
+          this.assertHTML(`<p data-test="foo">Hello world!</p>`);
+        }
+
+        ['@test arguments are updated if they change']() {
+          let ComponentClass = setComponentManager(
+            'basic',
+            EmberObject.extend({
+              salutation: computed('args.named.firstName', 'args.named.lastName', function() {
+                return this.args.named.firstName + ' ' + this.args.named.lastName;
+              }),
+            })
+          );
+
+          this.registerComponent('foo-bar', {
+            template: `<p>{{salutation}}</p>`,
+            ComponentClass,
+          });
+
+          this.render('<FooBar @firstName={{firstName}} @lastName={{lastName}} />', {
+            firstName: 'Yehuda',
+            lastName: 'Katz',
+          });
+
+          this.assertHTML(`<p>Yehuda Katz</p>`);
+
+          this.runTask(() =>
+            setProperties(this.context, {
+              firstName: 'Chad',
+              lastName: 'Hietala',
+            })
+          );
+
+          this.assertHTML(`<p>Chad Hietala</p>`);
+        }
+
+        ['@test updating attributes triggers didUpdateComponent'](assert) {
+          let ComponentClass = setComponentManager(
+            'instrumented-full',
+            EmberObject.extend({
+              didRender() {},
+              didUpdate() {},
+            })
+          );
+
+          this.registerComponent('foo-bar', {
+            template: `<p ...attributes>Hello world!</p>`,
+            ComponentClass,
+          });
+
+          this.render('<FooBar data-test={{value}} />', { value: 'foo' });
+
+          this.assertHTML(`<p data-test="foo">Hello world!</p>`);
+          assert.verifySteps(['createComponent', 'getContext', 'didCreateComponent']);
+
+          this.runTask(() => this.context.set('value', 'bar'));
+          assert.verifySteps(['didUpdateComponent']);
+        }
+      }
+    );
+  }
 }
